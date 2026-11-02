@@ -3,11 +3,14 @@ import cv2
 import h5py
 import glob
 import os
-from keras.models import model_from_json
 from retipy import retina
 from retipy import landmarks as l
 
-"""Module with operations related to classify vessels into arteries and veins."""
+"""Module with operations related to classify vessels into arteries and veins.
+
+Images are in OpenCV's BGR order, as in the training data. Modified 2026-11-02 for retipy-python_fork.
+See README_fork.md for the list of changes.
+"""
 
 _base_directory_training = 'retipy/resources/images/drive/training/'
 _base_directory_test = 'retipy/resources/images/drive/test/'
@@ -15,6 +18,9 @@ _base_directory_model = os.path.join(os.path.dirname(__file__), 'model/')
 
 
 def _vessel_widths(center_img: np.ndarray, segmented_img: np.ndarray):
+    """
+    分類の特徴量に使う幅。学習済みの重みはこの値で学習したので、landmarks.vessel_width と違い1画素少ないまま残す
+    """
     image = segmented_img.copy()
     widths = []
     for i in range(0, image.shape[0]):
@@ -28,40 +34,44 @@ def _vessel_widths(center_img: np.ndarray, segmented_img: np.ndarray):
                 w225 = 1
                 w270 = 1
                 w315 = 1
+                p = lambda dx, dy: l.pixel_value(image, i + dx, j + dy)
                 while True:
-                    if image[i, j + w0 + 1] != 0:
+                    if p(0, w0 + 1) != 0:
                         w0 += 1
-                    if image[i, j - w180 - 1] != 0:
+                    if p(0, -w180 - 1) != 0:
                         w180 += 1
-                    if image[i - w90 - 1, j] != 0:
+                    if p(-w90 - 1, 0) != 0:
                         w90 += 1
-                    if image[i + w270 + 1, j] != 0:
+                    if p(w270 + 1, 0) != 0:
                         w270 += 1
-                    if image[i - w45 - 1, j + w45 + 1] != 0:
+                    if p(-w45 - 1, w45 + 1) != 0:
                         w45 += 1
-                    if image[i + w225 + 1, j - w225 - 1] != 0:
+                    if p(w225 + 1, -w225 - 1) != 0:
                         w225 += 1
-                    if image[i - w135 - 1, j - w135 - 1] != 0:
+                    if p(-w135 - 1, -w135 - 1) != 0:
                         w135 += 1
-                    if image[i + w315 + 1, j + w315 + 1] != 0:
+                    if p(w315 + 1, w315 + 1) != 0:
                         w315 += 1
 
-                    if image[i, j + w0 + 1] == 0 and image[i, j - w180 - 1] == 0:
+                    if p(0, w0 + 1) == 0 and p(0, -w180 - 1) == 0:
                         widths.append([i, j, 0, w0, w180])
                         break
-                    elif image[i - w90 - 1, j] == 0 and image[i + w270 + 1, j] == 0:
+                    elif p(-w90 - 1, 0) == 0 and p(w270 + 1, 0) == 0:
                         widths.append([i, j, 90, w90, w270])
                         break
-                    elif image[i - w45 - 1, j + w45 + 1] == 0 and image[i + w225 + 1, j - w225 - 1] == 0:
+                    elif p(-w45 - 1, w45 + 1) == 0 and p(w225 + 1, -w225 - 1) == 0:
                         widths.append([i, j, 45, w45, w225])
                         break
-                    elif image[i - w135 - 1, j - w135 - 1] == 0 and image[i + w315 + 1, j + w315 + 1] == 0:
+                    elif p(-w135 - 1, -w135 - 1) == 0 and p(w315 + 1, w315 + 1) == 0:
                         widths.append([i, j, 135, w135, w315])
                         break
     return widths
 
 
 def _local_binary_pattern(window: list):
+    """
+    Ojala の LBP（周囲 >= 中心で 1）とは比較の向きが逆。学習済みの重みはこの値で学習したので、変えない
+    """
     x = [0, 0, 1, 2, 2, 2, 1, 0]
     y = [1, 2, 2, 2, 1, 0, 0, 0]
     decimal = 0
@@ -180,20 +190,32 @@ def _feature_vectors():
         data = _preparing_data(widths, 6, original, av, L, gray)
         features.extend(data)
 
-    h5f = h5py.File(_base_directory_model + 'vector_features_interpolation.h5', 'w')
-    h5f.create_dataset('training', data=features)
+    # 学習用の画像がないと features は空になる。同梱の特徴量ファイルを空で上書きしない
+    if features:
+        with h5py.File(_base_directory_model + 'vector_features_interpolation.h5', 'w') as h5f:
+            h5f.create_dataset('training', data=features)
     return features
+
+
+def _load_network():
+    """
+    modelVA.json の構成（入力36、隠れ層40、出力1、活性化はいずれもシグモイド）を modelVA.h5 の重みで計算する関数を返す。
+    Keras 2.2 形式の保存ファイルは現在の Keras で読めないため、NumPy で計算する。
+    """
+    with h5py.File(_base_directory_model + 'modelVA.h5', 'r') as weights:
+        hidden, output = weights['dense_1']['dense_1'], weights['dense_2']['dense_2']
+        k1, b1 = hidden['kernel:0'][()], hidden['bias:0'][()]
+        k2, b2 = output['kernel:0'][()], output['bias:0'][()]
+
+    def sigmoid(z):
+        return 1 / (1 + np.exp(-z))
+
+    return lambda inputs: sigmoid(sigmoid(inputs @ k1 + b1) @ k2 + b2).ravel()
 
 
 def _loading_model(original: np.ndarray, threshold: np.ndarray, av: np.ndarray, size: int):
     # Load model of the neuronal network
-    json_file = open(_base_directory_model + 'modelVA.json', "r")
-    loaded_model_json = json_file.read()
-    json_file.close()
-    loaded_model = model_from_json(loaded_model_json)
-
-    # Load weights
-    loaded_model.load_weights(_base_directory_model + 'modelVA.h5')
+    network = _load_network()
 
     gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
     (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(gray)
@@ -213,11 +235,10 @@ def _loading_model(original: np.ndarray, threshold: np.ndarray, av: np.ndarray, 
     data = _preparing_data(widths, 6, original, av, L, gray)
 
     features = np.array(data)
+    if features.size == 0:
+        raise ValueError("no vessel pixels to classify")
     predict_img = np.full((segmented_skeleton_img.shape[0], segmented_skeleton_img.shape[1]), 3, dtype=float)
-
-    for row in range(0, features.shape[0]):
-        prediction = loaded_model.predict(np.divide(features[row:row + 1, 2:size], 255), batch_size=1)
-        predict_img[features[row, 0], features[row, 1]] = prediction
+    predict_img[features[:, 0], features[:, 1]] = network(np.divide(features[:, 2:size], 255))
 
     return features, segmented_skeleton_img, thr_img, predict_img
 
@@ -340,7 +361,7 @@ def _box_labels(bifurcations: list, c_components: np.ndarray):
     connected_vessels = []
     for b in bifurcations:
         labels = c_components[1]
-        box = labels[b[1]-1:b[3]+1, b[0]-1:b[2]+1]
+        box = labels[max(b[1]-1, 0):b[3]+1, max(b[0]-1, 0):b[2]+1]
         unique = np.unique(box)
         if len(unique) == 4:
             connected_vessels.append(unique[1:4])
@@ -395,6 +416,7 @@ def _postprocessing(connected_components: np.ndarray, thr_img: np.ndarray, bifur
 
         for i in [1, 3, 5]:
             width = width_and_color[i - 1]
+            # 名前に反して最大とは限らないが、原著が不明で、最大に直すと同梱画像の正解率が下がったので残す（README_fork.md）
             if width*1.75 > maxwidth[0]:
                 maxwidth[0] = width
                 maxwidth[1] = width_and_color[i]
@@ -442,11 +464,18 @@ def _accuracy(post_img: np.ndarray, segmented_img: np.ndarray, gt_img: np.ndarra
 
 
 def classification(original_img: np.ndarray, manual_img: np.ndarray):
+    """
+    :param original_img: the fundus image in BGR order, as read by cv2.imread
+    :param manual_img: the segmented vessels
+    :return: a BGR image, arteries in [0, 0, 255] and veins in [255, 0, 0]
+    """
     manual = manual_img
-    bifurcations, crossings = l.classification(manual, 0)
+    # 余白をつけて端の血管でも円を調べられるようにする。返る座標は余白を除いた元の画像のもの
+    bifurcations, crossings = l.classification(manual, 20)
     features, sectioned_img, thr_img, predict_img = _loading_model(original_img, manual, None, 38)
     acc, rgb, network, original = _validating_model(features, sectioned_img, original_img, predict_img, 38, 0)
-    connected_components = cv2.connectedComponentsWithStats(sectioned_img.astype(np.uint8), 4, cv2.CV_32S)
+    connected_components = cv2.connectedComponentsWithStats(
+        sectioned_img.astype(np.uint8), connectivity=8, ltype=cv2.CV_32S)
     final_img, img_original = _homogenize(connected_components, network, rgb, original)
     post_img = _postprocessing(connected_components, thr_img, bifurcations, img_original)
     return post_img

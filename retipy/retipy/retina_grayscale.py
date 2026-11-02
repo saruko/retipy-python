@@ -14,7 +14,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-"""retina module to handle basic image processing on retinal images"""
+"""retina module to handle basic image processing on retinal images
+
+Modified 2026-11-02 for retipy-python_fork. See README_fork.md for the list of changes.
+"""
 
 import base64
 from copy import copy
@@ -42,7 +45,7 @@ class Retina_grayscale(object):
 
     @staticmethod
     def get_base64_image(image: np.ndarray):
-        temp_image = Image.fromarray(image.astype('uint8'), 'L')
+        temp_image = Image.fromarray(image.astype('uint8'))
         buffer = BytesIO()
         temp_image.save(buffer, format="png")
         return str(base64.b64encode(buffer.getvalue()).decode('utf-8'))
@@ -64,7 +67,7 @@ class Retina_grayscale(object):
         self.original_image = self.np_image
         self.segmented = False
         self.segmented_image = np.zeros((self.shape))
-        self.roc = np.zeros((1,5)).astype(np.float)
+        self.roc = np.zeros((1,5)).astype(float)
 
         if image_type == 0:
             if self.shape[0] <= 1020 and self.shape[1] <= 1020:
@@ -171,18 +174,20 @@ class Retina_grayscale(object):
         self.np_image = cv2.medianBlur(self.np_image.astype(np.uint8), structure)#ndimage.median_filter(self.np_image, size=(structure, structure))
 
     def shadow_correction(self):
-        """Applies the following filters: mean filter with a 3x3 kernel, Gaussian filter with a kernel of 9x9
-        and sigma of 1.82, and a median filter with a 60x60 kernel. The resulting image is subtracted with the
-        original image and finally the values obtained from the subtraction are moved to the 256 possible grayscale values"""
+        """Applies the following filters: mean filter, Gaussian filter with a sigma of 1.82 and a median filter
+        (kernels of 3, 9 and 41 for image_type 2, 11, 33 and 111 for image_type 1). The pixels outside the field of
+        view are set to the mean gray level before the median filter (Marin 2011). The resulting image is subtracted
+        with the original image and finally the values obtained from the subtraction are moved to the 256 possible
+        grayscale values"""
 
         self._copy()
         minuendo = np.copy(self.np_image)
         self.mean_filter(self.kernel_mean_filter)
         self.gaussian_filter(self.kernel_gaussian_filter, 1.82)
         self.mean_value = np.mean(self.np_image)
-        self.np_image[self.mask] = self.mean_value
+        self.np_image[self.mask == 0] = self.mean_value
         self.median_filter(self.kernel_median_filter)#Ver si es posible aumentarlo en otro pc
-        self.np_image = minuendo - self.np_image.astype(np.float)
+        self.np_image = minuendo - self.np_image.astype(float)
         min = self.np_image.min()
         self.np_image = self.np_image - min
         max = self.np_image.max()
@@ -193,19 +198,11 @@ class Retina_grayscale(object):
         self.restore_mask()
 
     def homogenize(self):
-        """Moves all the values resulting from the correction of the shadows to the possible 255 values"""
+        """Marin 2011 の式(2)(3): g = g_input + 128 - g_input_max。g_input_max は画素数が最も多い濃度（視野内の最頻値）
+        で、網膜の背景が 128 にそろう"""
         self._copy()
-        g_input_max = self.np_image.max()
-        aux = np.zeros(self.shape)
-        for row in range(0, self.shape[0]):
-            for col in range(0, self.shape[1]):
-                g = self.np_image[row, col] + 180 - g_input_max
-                if (g < 0):
-                    aux[row, col] = 0
-                elif (g > 255): # pragma: no cover
-                    aux[row, col] = 255
-                else:
-                    aux[row, col] = g
+        g_input_max = np.bincount(self.np_image[self.mask == 1].astype(np.int64)).argmax()
+        aux = np.clip(self.np_image + 128 - g_input_max, 0, 255)
         self.np_image = aux
         self.IH = np.copy(aux)
 
@@ -267,11 +264,10 @@ class Retina_grayscale(object):
                 center = (int(x), int(y))
                 # cv2.circle(final_vessels_segmentation, center, int(radius), (0, 0, 0), 2)
                 cv2.drawContours(final_vessels_segmentation, [npaContour], -1, (255, 255, 255), -1)
-        cv2.pyrUp(final_vessels_segmentation, final_vessels_segmentation)
+        # 本家の pyrUp と pyrDown は結果を捨てていて、実際には拡大も縮小もしていなかった。ここまでの値はその動作に
+        # 合わせて決められているので、呼び出しを外して同じ動作のままにする（README_fork.md）
         for i in range(0, self.smoothing_curves_iterations):
             final_vessels_segmentation = cv2.medianBlur(final_vessels_segmentation.astype(np.uint8), self.smoothing_curves_kernel)
-
-        cv2.pyrDown(final_vessels_segmentation, final_vessels_segmentation)
 
         kernel = np.ones((self.kernel_erode, self.kernel_erode), np.uint8)
         final_vessels_segmentation = cv2.erode(final_vessels_segmentation, kernel, iterations=1)
@@ -281,7 +277,7 @@ class Retina_grayscale(object):
         normal_vessels_segmentation = self.normal_vessels_segmentation()
         self.np_image = self.original_image
         tiny_vessels_segmentation = self.tiny_vessels_segmentation()
-        final_vessels_segmentation = tiny_vessels_segmentation.astype(np.float) + normal_vessels_segmentation.astype(np.float)
+        final_vessels_segmentation = tiny_vessels_segmentation.astype(float) + normal_vessels_segmentation.astype(float)
         k = final_vessels_segmentation >= 1
         final_vessels_segmentation[k] = 255
         k2 = final_vessels_segmentation <= 0

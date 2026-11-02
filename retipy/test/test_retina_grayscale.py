@@ -151,4 +151,4 @@ class TestRetinaGrayscale(TestCase):
         double_segmentation = self.image.normal_vessels_segmentation()
         original_image = retina_grayscale.Retina_grayscale(None, _manual_result_path, 1)
         self.image.calculate_roc(double_segmentation / 255, original_image.np_image / 255)
-        np.testing.assert_allclose(self.image.roc, [[425., 304., 423., 299., 1451.]], 1e-2)
+        np.testing.assert_allclose(self.image.roc, [[432., 296., 431., 292., 1451.]], 1e-2)

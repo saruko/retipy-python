@@ -63,7 +63,7 @@ class TestRetina(TestCase):
 
     def test_threshold_image(self):
         self.image.threshold_image()
-        original_image = color.rgb2gray(io.imread(_image_path))
+        original_image = color.rgb2gray(io.imread(_image_path)[:, :, :3])
         output = original_image > filters.threshold_mean(original_image)
 
         assert_array_equal(self.image.np_image, output, "segmented image does not match")
@@ -205,8 +205,9 @@ class TestWindow(TestCase):
         self._retina_image.np_image[9, 21] = 1
         vessels = retina.detect_vessel_border(self._retina_image)
 
-        self.assertEqual(len(vessels), 1, "only one vessel should've been extracted")
-        self.assertEqual(len(vessels[0][0]), 3, "vessel should have 3 pixels")
+        # Y字は分岐点で区切るので3本になる（本家は1本にまとめて1行1点に間引き、3画素になっていた）
+        self.assertEqual(len(vessels), 3, "three segments should've been extracted")
+        self.assertEqual(max(len(v[0]) for v in vessels), 8, "the stem should have 8 pixels")
 
     def test_save_window(self):
         self._retina_image.np_image[:, :] = 1

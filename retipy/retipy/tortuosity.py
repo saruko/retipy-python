@@ -17,6 +17,8 @@
 """
 Module that applies tortuosity measures to given images. It used the measures defined in
 tortuosity_measures
+
+Modified 2026-11-02 for retipy-python_fork. See README_fork.md for the list of changes.
 """
 
 import numpy as np
@@ -36,7 +38,8 @@ def density(
         window_size: int = 10,
         min_pixels: int = 10,
         creation_method: str = "separated",
-        threshold: float = 0.97) -> dict:
+        threshold: float = None) -> dict:
+    """threshold を超える窓だけを返す。None なら全ての窓を返す。元の既定値 0.97 は誤った式の値域に合わせたもの"""
     image = retina.Retina(image, "tortuosity_density")
     dimension = image.reshape_by_window(window_size, True)
     image.threshold_image()
@@ -60,13 +63,13 @@ def density(
             if len(vessel[0]) > 10:
                 processed_vessel_count += 1
                 tortuosity_density = tortuosity_measures.tortuosity_density(vessel[0], vessel[1])
-                if tortuosity_density > threshold:
+                if threshold is None or tortuosity_density > threshold:
                     evaluation["data"].append(_tortuosity_window(
                         w_pos[0, 0].item(),
                         w_pos[0, 1].item(),
                         w_pos[1, 0].item(),
                         w_pos[1, 1].item(),
-                        "{0:.2f}".format(tortuosity_density)))
+                        "{0:.5f}".format(tortuosity_density)))
 
     return evaluation
 
@@ -76,7 +79,8 @@ def fractal(
         window_size: int = 10,
         min_pixels: int = 56,
         creation_method: str = "separated",
-        threshold: float = 0.94) -> dict:
+        threshold: float = None) -> dict:
+    """threshold を超える窓だけを返す。None なら全ての窓を返す。元の既定値 0.94 はほぼ全ての曲線が超える"""
     image = retina.Retina(image, "tortuosity_density")
     dimension = image.reshape_by_window(window_size, True)
     image.threshold_image()
@@ -99,7 +103,7 @@ def fractal(
             if len(vessel[0]) > 10:
                 processed_vessel_count += 1
                 fractal_tortuosity = tortuosity_measures.fractal_tortuosity_curve(vessel[0], vessel[1])
-                if fractal_tortuosity > threshold:
+                if threshold is None or fractal_tortuosity > threshold:
                     evaluation["data"].append(_tortuosity_window(
                         w_pos[0, 0].item(),
                         w_pos[0, 1].item(),

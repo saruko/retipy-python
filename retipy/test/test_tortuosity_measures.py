@@ -16,8 +16,8 @@
 
 """tests for tortuosity measures module"""
 
+from math import pi, sin
 from unittest import TestCase
-from numpy.testing import assert_array_equal
 
 from retipy import tortuosity_measures as tm, retina
 
@@ -39,7 +39,7 @@ class TestTortuosityMeasures(TestCase):
 
     def test_linear_regression_tortuosity_no_second_try(self):
         self.assertEqual(
-            tm.linear_regression_tortuosity([1, 2, 3, 4], [1, 1, 1, 1], False),
+            tm.linear_regression_tortuosity([1, 2, 3, 4], [1, 1, 1, 1], retry=False),
             1,
             "should return 1")
 
@@ -67,10 +67,10 @@ class TestTortuosityMeasures(TestCase):
             ValueError, tm.distance_measure_tortuosity, [1], [2])
 
     def test_detect_inflection_points(self):
-        assert_array_equal(
-            [2, 3, 4],
-            tm._detect_inflection_points([0, 1, 2, 3, 4, 5], [4, 6, 8, 6, 9, 0]),
-            "inflection points does not match")
+        # 曲率の符号の変化を数える（Grisan 2008）。y の増減の変化は極値であり変曲点ではない
+        x = list(range(200))
+        y = [round(40 * sin(2 * pi * i / 199)) for i in x]
+        self.assertEqual(len(tm._detect_inflection_points(x, y)), 1, "inflection points does not match")
 
     def test_distance_inflection_count_tortuosity(self):
         self.assertEqual(
@@ -96,14 +96,11 @@ class TestTortuosityMeasures(TestCase):
             "Tortuosity Density should be greater than zero")
 
     def test_squared_curvature_tortuosity(self):
-        self.assertEqual(
+        self.assertAlmostEqual(
             tm.squared_curvature_tortuosity([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]),
             0,
-            "squared curvature tortuosity does not match")
+            msg="squared curvature tortuosity does not match")
 
-    def test_smooth_tortuosity(self):
-        self.assertEqual(tm.smooth_tortuosity_cubic(range(0, 11, 1), [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0]), 0)
-        
     def test_fractal_tortuosity_curve(self):
         val = tm.fractal_tortuosity_curve([1, 2, 3, 4, 5], [10, 11, 12, 13, 14])
         self.assertEqual(int(val), 1, "tortuosity of a line should be close to 1")

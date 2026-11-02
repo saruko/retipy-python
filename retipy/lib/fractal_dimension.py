@@ -7,18 +7,24 @@
 # metric space (X, d).
 # -----------------------------------------------------------------------------
 # code taken from https://gist.github.com/rougier/e5eafc276a4e54f516ed5559df4242c0
+#
+# Modified 2026-11-02 for retipy-python_fork: counts every box that covers the set, and treats any
+# value above zero as the set. See README_fork.md for the list of changes.
 import numpy as np
 
 
 def fractal_dimension(b_image):
     """
     Calculates the fractal dimension of the given binary image Z
-    :param b_image: a binary 2d image
+    :param b_image: a binary 2d image. Any value above zero belongs to the set.
     :return: the Minkowski–Bouligand dimension of the image
     """
 
     # Only for 2d image
     assert(len(b_image.shape) == 2)
+    image = (np.asarray(b_image) > 0).astype(np.int64)
+    if not image.any():
+        raise ValueError("the image has no foreground pixels")
 
     # From https://github.com/rougier/numpy-100 (#87)
     def boxcount(Z, k):
@@ -26,11 +32,11 @@ def fractal_dimension(b_image):
             np.add.reduceat(Z, np.arange(0, Z.shape[0], k), axis=0),
                                np.arange(0, Z.shape[1], k), axis=1)
 
-        # We count non-empty (0) and non-full boxes (k*k)
-        return len(np.where((S > 0) & (S < k*k))[0])
+        # We count the boxes needed to cover the set, full ones included
+        return len(np.where(S > 0)[0])
 
     # Minimal dimension of image
-    p = min(b_image.shape)
+    p = min(image.shape)
 
     # Greatest power of 2 less than or equal to p
     n = 2**np.floor(np.log(p)/np.log(2))
@@ -44,7 +50,7 @@ def fractal_dimension(b_image):
     # Actual box counting with decreasing size
     counts = []
     for size in sizes:
-        counts.append(boxcount(b_image, size))
+        counts.append(boxcount(image, size))
 
     # Fit the successive log(sizes) with log (counts)
     coeffs = np.polyfit(np.log(sizes), np.log(counts), 1)

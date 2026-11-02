@@ -14,11 +14,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-"""Module with operations related to detect and classify crossings and bifurcations."""
+"""Module with operations related to detect and classify crossings and bifurcations.
+
+Modified 2026-11-02 for retipy-python_fork. See README_fork.md for the list of changes.
+"""
 
 import numpy as np
 import cv2
 from retipy import retina
+
+
+def pixel_value(image: np.ndarray, x: int, y: int):
+    """画像の外は背景として扱う。負の番号で反対側の画素を読まないようにする"""
+    if 0 <= x < image.shape[0] and 0 <= y < image.shape[1]:
+        return image[x, y]
+    return 0
 
 
 def potential_landmarks(skeleton_img: np.ndarray, kernel: int):
@@ -42,39 +52,44 @@ def potential_landmarks(skeleton_img: np.ndarray, kernel: int):
 
 
 def vessel_width(thresholded_image: np.ndarray, landmarks: list):
+    """
+    各点の血管幅を返す。[向き, 片側の画素数, 反対側の画素数]。反対側の画素数は中心の画素を含むので、
+    2つの和が血管幅になる。
+    """
     image = thresholded_image.copy()
     widths = []
     for j in landmarks:
         w0 = w45 = w90 = w135 = 0
         w180 = w225 = w270 = w315 = 1
+        p = lambda dx, dy: pixel_value(image, j[0] + dx, j[1] + dy)
         while True:
-            if image[j[0], j[1] + w0 + 1] != 0:
+            if p(0, w0 + 1) != 0:
                 w0 += 1
-            if image[j[0], j[1] - w180 - 1] != 0:
+            if p(0, -w180) != 0:
                 w180 += 1
-            if image[j[0] - w45 - 1, j[1] + w45 + 1] != 0:
+            if p(-w45 - 1, w45 + 1) != 0:
                 w45 += 1
-            if image[j[0] + w225 + 1, j[1] - w225 - 1] != 0:
+            if p(w225, -w225) != 0:
                 w225 += 1
-            if image[j[0] - w90 - 1, j[1]] != 0:
+            if p(-w90 - 1, 0) != 0:
                 w90 += 1
-            if image[j[0] + w270 + 1, j[1]] != 0:
+            if p(w270, 0) != 0:
                 w270 += 1
-            if image[j[0] - w135 - 1, j[1] - w135 - 1] != 0:
+            if p(-w135 - 1, -w135 - 1) != 0:
                 w135 += 1
-            if image[j[0] + w315 + 1, j[1] + w315 + 1] != 0:
+            if p(w315, w315) != 0:
                 w315 += 1
 
-            if image[j[0], j[1] + w0 + 1] == 0 and image[j[0], j[1] - w180 - 1] == 0:
+            if p(0, w0 + 1) == 0 and p(0, -w180) == 0:
                 widths.append([0, w0, w180])
                 break
-            elif image[j[0] - w45 - 1, j[1] + w45 + 1] == 0 and image[j[0] + w225 + 1, j[1] - w225 - 1] == 0:
+            elif p(-w45 - 1, w45 + 1) == 0 and p(w225, -w225) == 0:
                 widths.append([45, w45, w225])
                 break
-            elif image[j[0] - w90 - 1, j[1]] == 0 and image[j[0] + w270 + 1, j[1]] == 0:
+            elif p(-w90 - 1, 0) == 0 and p(w270, 0) == 0:
                 widths.append([90, w90, w270])
                 break
-            elif image[j[0] - w135 - 1, j[1] - w135 - 1] == 0 and image[j[0] + w315 + 1, j[1] + w315 + 1] == 0:
+            elif p(-w135 - 1, -w135 - 1) == 0 and p(w315, w315) == 0:
                 widths.append([135, w135, w315])
                 break
 
@@ -109,6 +124,10 @@ def finding_landmark_vessels(widths: list, landmarks: list, skeleton: np.ndarray
                         else:
                             x = x0 + dy
 
+                    # 円が画像の端にかかる部分は調べない。端の外を読むと空の領域を OpenCV に渡して止まる
+                    if not (2 <= x < skeleton.shape[0] - 2 and 2 <= y < skeleton.shape[1] - 2):
+                        continue
+
                     acum = 0
                     for i in range(-2, 3):
                         for j in range(-2, 3):
@@ -123,7 +142,8 @@ def finding_landmark_vessels(widths: list, landmarks: list, skeleton: np.ndarray
                     elif acum == 0:
                         crgb[x, y] = [255, 0, 0]
                         block = cgray[x - 1:x + 2, y - 1:y + 2]
-                        connected_components = cv2.connectedComponentsWithStats(block.astype(np.uint8), 8, cv2.CV_8U)
+                        connected_components = cv2.connectedComponentsWithStats(
+                            block.astype(np.uint8), connectivity=8, ltype=cv2.CV_32S)
                         for k in range(1, connected_components[0]):
                             mask = connected_components[1] == k
                             indexes = np.column_stack(np.where(mask))
@@ -162,6 +182,8 @@ def boxes_auxiliary(skeleton: np.ndarray, landmarks: list, size: int, bifurcatio
     for i in range(-3, 4):
         for j in range(-3, 4):
             box.append([x + i, y + j])
+            if not (0 <= x + i < skeleton.shape[0] and 0 <= y + j < skeleton.shape[1]):
+                continue
             if all(skeleton[x + i, y + j] == [0, 0, 255]):
                 num_bifurcations += 1
             elif all(skeleton[x + i, y + j] == [255, 0, 0]):
@@ -172,7 +194,7 @@ def boxes_auxiliary(skeleton: np.ndarray, landmarks: list, size: int, bifurcatio
     if num_bifurcations > num_crossings:
         bifurcations_coordinates.append([y - 3 - size, x - 3 - size, y + 3 - size, x + 3 - size])
     else:
-        crossings_coordinates.append([y - 3 - size, x - 3 - size, y + 3 + size, x + 3 + size])
+        crossings_coordinates.append([y - 3 - size, x - 3 - size, y + 3 - size, x + 3 - size])
 
     return landmarks
 

@@ -13,6 +13,8 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Modified 2026-11-02 for retipy-python_fork. See README_fork.md for the list of changes.
 
 """Module with common mathematical operators that could be reused elsewhere"""
 
@@ -38,7 +40,7 @@ def derivative1_centered_h1(target, y):
     :param y: an array with the values
     :return: the centered derivative of target
     """
-    if len(y) - 1 <= target <= 0:
+    if not 0 < target < len(y) - 1:
         raise(ValueError("Invalid target, array size {}, given {}".format(len(y), target)))
     return (y[target + 1] - y[target - 1])/2
 
@@ -51,6 +53,6 @@ def derivative2_centered_h1(target, y):
     :param y: an array with the values
     :return: the centered second derivative of target
     """
-    if len(y) - 1 <= target <= 0:
+    if not 0 < target < len(y) - 1:
         raise(ValueError("Invalid target, array size {}, given {}".format(len(y), target)))
-    return (y[target + 1] - 2*y[target] + y[target - 1])/4
+    return y[target + 1] - 2*y[target] + y[target - 1]

@@ -18,6 +18,9 @@
 Module with all REST endpoints to classify blood vessels into arteries and veins given a original image, segmented image
 and a/v image
 All operations are implemented as POST
+
+Modified 2026-11-02 for retipy-python_fork: the classifier works in BGR, so the image is converted on the way in and
+out. See README_fork.md for the list of changes.
 """
 
 import base64
@@ -44,9 +47,7 @@ def post_vessel_classification():
             segmented = Image.open(io.BytesIO(segmented)).convert('L')
             original = base64.b64decode(json["original_image"])
             original = Image.open(io.BytesIO(original)).convert('RGB')
-            data = {
-                "classification": Retina.get_base64_image(
-                    vessel_classification.classification(
-                        np.array(original), np.array(segmented)),
-                    False)}
+            classified = vessel_classification.classification(
+                np.array(original)[:, :, ::-1].copy(), np.array(segmented))
+            data = {"classification": Retina.get_base64_image(classified[:, :, ::-1].copy(), False)}
     return flask.jsonify(data)

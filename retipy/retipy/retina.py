@@ -14,7 +14,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-"""retina module to handle basic image processing on retinal images"""
+"""retina module to handle basic image processing on retinal images
+
+Modified 2026-11-02 for retipy-python_fork. See README_fork.md for the list of changes.
+"""
 
 import base64
 import math
@@ -44,9 +47,16 @@ class Retina(object):
         return io.imread(img_path)
 
     @staticmethod
+    def _to_uint8(image: np.ndarray) -> np.ndarray:
+        """0〜1 の小数や二値の画像は、そのまま uint8 にするとほぼ真っ黒になるので 255 倍する"""
+        if image.dtype == bool or (image.dtype.kind == 'f' and image.max() <= 1):
+            image = image * 255.0
+        return np.clip(image, 0, 255).astype('uint8')
+
+    @staticmethod
     def get_base64_image(image: np.ndarray, is_luminance: bool = True):
         if is_luminance:
-            temp_image = Image.fromarray(image.astype('uint8'), 'L')
+            temp_image = Image.fromarray(Retina._to_uint8(image))
         else:
             temp_image = Image.fromarray(image)
         buffer = BytesIO()
@@ -64,7 +74,8 @@ class Retina(object):
 
         self.segmented = False
         self.old_image = None
-        self.np_image = color.rgb2gray(self.np_image)
+        if self.np_image.ndim == 3:
+            self.np_image = color.rgb2gray(self.np_image[:, :, :3])
         self.original_base64 = self.get_base64_image(self.np_image)
         self.depth = 1
         self.shape = self.np_image.shape
@@ -211,13 +222,13 @@ class Retina(object):
         return self._file_name
 
     def _output_filename(self):
-        return "/out_" + self.filename
+        return "out_" + self.filename
 
     def save_image(self, output_folder):
         """Saves the image in the given output folder, the name will be out_<original_image_name>"""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            io.imsave(output_folder + self._output_filename(), self.np_image)
+            io.imsave(path.join(output_folder, self._output_filename()), self._to_uint8(self.np_image))
 
     def view(self):  # pragma: no cover
         """show a window with the internal image"""
@@ -231,7 +242,8 @@ class Retina(object):
         :param retinal_image: the image to compare with
         :return:  a new Retina object with the differences
         """
-        return Retina(self.np_image - retinal_image.np_image, "diff" + self.filename)
+        difference = self.np_image.astype(float) - retinal_image.np_image.astype(float)
+        return Retina(difference, "diff" + self.filename)
 
 
 class Window(Retina):
@@ -249,6 +261,7 @@ class Window(Retina):
         self.shape = self.windows.shape
         self._mode = self.mode_pytorch
         self._tags = None
+        self._has_tag_layer = False
 
     @property
     def mode_pytorch(self):
@@ -264,10 +277,10 @@ class Window(Retina):
 
     @tags.setter
     def tags(self, value: np.ndarray):
-        self._tags = value
         if value.shape[0] != self.shape[0]:
             raise ValueError(
                 "Wrong set of tags, expected {} got {}".format(self.shape[0], value.shape[0]))
+        self._tags = value
 
     @property
     def mode(self) -> str:
@@ -308,7 +321,7 @@ class Window(Retina):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             io.imsave(
-                output_folder + self._window_filename(window_id), self.windows[window_id, 0])
+                path.join(output_folder, self._window_filename(window_id)), self._to_uint8(self.windows[window_id, 0]))
 
     class _WindowIterator:
         def __init__(self, window: np.ndarray):
@@ -330,12 +343,13 @@ class Window(Retina):
 
     @staticmethod
     def _create_tag_image(dx: int, dy: int, tags: list) -> np.ndarray:
-        image = np.empty((dx, dy))
+        image = np.zeros((dx, dy))
         boxes = len(tags) % 2 + len(tags)
         box_count = (boxes // 2)
         tag_x = dx // box_count
         tag_y = dy // 2
-        for i in range(0, boxes):
+        # タグが奇数個のときは最後の箱が余るので、0 のままにする
+        for i in range(0, len(tags)):
             cx = (i % box_count) * tag_x
             cy = (i // box_count) * tag_y
             image[cx:cx+tag_x, cy:cy+tag_y] = tags[i]
@@ -356,9 +370,16 @@ class Window(Retina):
         if self.mode != self.mode_pytorch:
             self.mode = self.mode_pytorch
 
-        for i in range(0, self.tags.shape[0]):
-            self.windows[i, -1] = self._create_tag_image(
-                self.windows.shape[2], self.windows.shape[3], self.tags[i])
+        layer = np.stack([
+            self._create_tag_image(self.windows.shape[2], self.windows.shape[3], tags)
+            for tags in self.tags])
+        if self._has_tag_layer:
+            self.windows[:, -1] = layer
+        else:
+            self.windows = np.concatenate([self.windows, layer[:, np.newaxis]], axis=1)
+            self.shape = self.windows.shape
+            self.depth += 1
+            self._has_tag_layer = True
 
     @staticmethod
     def create_windows(
@@ -392,7 +413,7 @@ class Window(Retina):
         if method == "separated":
             windows = np.empty(
                 [(img_dimension // dimension) ** 2, image.depth, dimension, dimension])
-            windows_position = np.empty([(img_dimension // dimension) ** 2, 2, 2], dtype=np.int)
+            windows_position = np.empty([(img_dimension // dimension) ** 2, 2, 2], dtype=np.int64)
             for x in range(0, image.shape[0], dimension):
                 for y in range(0, image.shape[1], dimension):
                     cw = windows_position[window_id]
@@ -408,8 +429,8 @@ class Window(Retina):
             new_dimension = dimension // 2
             windows = np.empty(
                 [(img_dimension // new_dimension) ** 2, image.depth, dimension, dimension])
-            windows_position = np.empty([(img_dimension // new_dimension) ** 2, 2, 2], dtype=np.int)
-            if image.shape[0] % new_dimension != 0:
+            windows_position = np.empty([(img_dimension // new_dimension) ** 2, 2, 2], dtype=np.int64)
+            if dimension % 2 != 0 or image.shape[0] % new_dimension != 0:
                 raise ValueError(
                     "Dimension value '{}' is not valid, choose a value that its half value can split the image evenly"
                     .format(dimension))
@@ -437,92 +458,102 @@ class Window(Retina):
         return windows, windows_position
 
 
+_NEIGHBOUR_RING = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
+
+
+def _intersection_number(skeleton: np.ndarray, x: int, y: int) -> int:
+    """Calvo 2011 の式(3)。周囲8画素を一周して、血管が何本出ているかを数える。分岐と交叉で 3 以上になる"""
+    values = [skeleton[x + dx, y + dy]
+              if 0 <= x + dx < skeleton.shape[0] and 0 <= y + dy < skeleton.shape[1] else False
+              for dx, dy in _NEIGHBOUR_RING]
+    return sum(values[i] != values[(i + 1) % 8] for i in range(8)) // 2
+
+
+def _remove_corner_pixels(skeleton: np.ndarray) -> np.ndarray:
+    """階段の角の余分な画素を除く。除いても周囲のつながりが変わらない画素だけを除くので、血管は切れない"""
+    thin = skeleton.copy()
+    connected = np.ones((3, 3))
+    removed = True
+    while removed:
+        removed = False
+        for x, y in zip(*np.nonzero(thin)):
+            around = thin[max(x - 1, 0):x + 2, max(y - 1, 0):y + 2].copy()
+            if around.sum() < 4 or _intersection_number(thin, x, y) != 2:
+                continue
+            around[min(x, 1), min(y, 1)] = False
+            if ndimage.label(around, structure=connected)[1] == 1:
+                thin[x, y] = False
+                removed = True
+    return thin
+
+
+def _order_path(pixels: list):
+    """
+    8近傍でつながる画素のうち、最も離れた2点を結ぶ経路を順に返す。端点のない輪は None を返す。
+    細線化で残る小さな塊があっても、血管全体を捨てずに本幹をたどる。
+    """
+    members = set(pixels)
+    if len(members) == 1:
+        return list(members)
+    neighbours_of = {
+        p: [(p[0] + dx, p[1] + dy) for dx, dy in _NEIGHBOUR_RING if (p[0] + dx, p[1] + dy) in members]
+        for p in members}
+    ends = sorted(p for p, n in neighbours_of.items() if len(n) == 1)
+    if not ends:
+        return None
+
+    def farthest_from(start):
+        parents = {start: None}
+        queue = [start]
+        for current in queue:
+            for following in neighbours_of[current]:
+                if following not in parents:
+                    parents[following] = current
+                    queue.append(following)
+        return queue[-1], parents
+
+    first, _ = farthest_from(ends[0])
+    current, parents = farthest_from(first)
+    ordered = []
+    while current is not None:
+        ordered.append(current)
+        current = parents[current]
+    return ordered
+
+
 def detect_vessel_border(image: Retina, ignored_pixels=1):
     """
     Extracts the vessel border of the given image, this method will try to extract all vessel
     borders that does not overlap.
 
+    骨格を分岐点で区切り、各区間の画素を端点から血管に沿った順に返す。端点のない輪は返さない。
+    入力の画像は書き換えない。
+
     Returns a list of lists with the points of each vessel.
 
     :param image: the retinal image to extract its vessels
-    :param ignored_pixels: how many pixels will be ignored from borders.
+    :param ignored_pixels: how many pixels will be ignored from borders. A vessel found only inside
+                           this border is not returned.
     """
+    skeleton = _remove_corner_pixels(np.asarray(image.np_image) > 0)
+    segments = skeleton.copy()
+    for x, y in zip(*np.nonzero(skeleton)):
+        if _intersection_number(skeleton, x, y) > 2:
+            segments[max(x - 1, 0):x + 2, max(y - 1, 0):y + 2] = False
 
-    def neighbours(pixel, window):  # pragma: no cover
-        """
-        Creates a list of the neighbouring pixels for the given one. It will only
-        add to the list if the pixel has value.
-
-        :param pixel: the pixel position to extract its neighbours
-        :param window:  the window with the pixels information
-        :return: a list of pixels (list of tuples)
-        """
-        x_less = max(0, pixel[0] - 1)
-        y_less = max(0, pixel[1] - 1)
-        x_more = min(window.shape[0] - 1, pixel[0] + 1)
-        y_more = min(window.shape[1] - 1, pixel[1] + 1)
-
-        active_neighbours = []
-
-        if window.np_image[x_less, y_less] > 0:
-            active_neighbours.append([x_less, y_less])
-        if window.np_image[x_less, pixel[1]] > 0:
-            active_neighbours.append([x_less, pixel[1]])
-        if window.np_image[x_less, y_more] > 0:
-            active_neighbours.append([x_less, y_more])
-        if window.np_image[pixel[0], y_less] > 0:
-            active_neighbours.append([pixel[0], y_less])
-        if window.np_image[pixel[0], y_more] > 0:
-            active_neighbours.append([pixel[0], y_more])
-        if window.np_image[x_more, y_less] > 0:
-            active_neighbours.append([x_more, y_less])
-        if window.np_image[x_more, pixel[1]] > 0:
-            active_neighbours.append([x_more, pixel[1]])
-        if window.np_image[x_more, y_more] > 0:
-            active_neighbours.append([x_more, y_more])
-
-        return active_neighbours
-
-    def vessel_extractor(window, start_x, start_y):
-        """
-        Extracts a vessel using adjacent points, when each point is extracted is deleted from the
-        original image
-        """
-        vessel = []
-        pending_pixels = [[start_x, start_y]]
-        while pending_pixels:
-            pixel = pending_pixels.pop(0)
-            if window.np_image[pixel[0], pixel[1]] > 0:
-                vessel.append(pixel)
-                window.np_image[pixel[0], pixel[1]] = 0
-
-                # add the neighbours with value to pending list:
-                pending_pixels.extend(neighbours(pixel, window))
-
-        # sort by x position
-        vessel.sort(key=lambda item: item[0])
-
-        # remove all repeating x values
-        current_x = -1
-        filtered_vessel = []
-        for pixel in vessel:
-            if pixel[0] == current_x:
-                pass
-            else:
-                filtered_vessel.append(pixel)
-                current_x = pixel[0]
-
-        vessel_x = []
-        vessel_y = []
-        for pixel in filtered_vessel:
-            vessel_x.append(pixel[0])
-            vessel_y.append(pixel[1])
-        return [vessel_x, vessel_y]
+    labels, _ = ndimage.label(segments, structure=np.ones((3, 3)))
+    rows, cols = np.nonzero(labels)
+    pixels_of = {}
+    for x, y in zip(rows.tolist(), cols.tolist()):
+        pixels_of.setdefault(labels[x, y], []).append((x, y))
 
     vessels = []
-    for it_x in range(ignored_pixels, image.shape[0] - ignored_pixels):
-        for it_y in range(ignored_pixels, image.shape[1] - ignored_pixels):
-            if image.np_image[it_x, it_y] > 0:
-                vessel = vessel_extractor(image, it_x, it_y)
-                vessels.append(vessel)
+    for label in sorted(pixels_of):
+        pixels = pixels_of[label]
+        if not any(ignored_pixels <= x < labels.shape[0] - ignored_pixels
+                   and ignored_pixels <= y < labels.shape[1] - ignored_pixels for x, y in pixels):
+            continue
+        ordered = _order_path(pixels)
+        if ordered is not None:
+            vessels.append([[p[0] for p in ordered], [p[1] for p in ordered]])
     return vessels
